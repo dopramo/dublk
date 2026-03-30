@@ -40,14 +40,24 @@ export async function GET(
     );
   }
 
-  // 2. Get movie details using Management API (bypasses RLS for unpublished movies too)
-  try {
-    const movies = await executeSQL(
-      `SELECT id, bunny_video_id, title FROM public.movies WHERE id = '${movieId}' LIMIT 1`
-    );
+  // 2. Check if user is admin
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('is_admin')
+    .eq('id', user.id)
+    .single();
+  
+  const isAdmin = profile?.is_admin === true;
 
-    const movie = movies?.[0];
-    if (!movie) {
+  // 3. Get movie details using standard client (RLS handles published visibility naturally)
+  try {
+    const { data: movie, error: movieError } = await supabase
+      .from('movies')
+      .select('id, bunny_video_id, title')
+      .eq('id', movieId)
+      .single();
+
+    if (movieError || !movie) {
       return NextResponse.json({ error: 'Movie not found' }, { status: 404 });
     }
 
@@ -55,25 +65,36 @@ export async function GET(
       return NextResponse.json({ error: 'Video not available yet' }, { status: 404 });
     }
 
-    // 3. Check purchase access using Management API
-    const fullAccess = await executeSQL(
-      `SELECT id FROM public.purchases WHERE user_id = '${user.id}' AND type = 'full' AND status = 'verified' LIMIT 1`
-    );
+    // 4. Check purchase access (Admins automatically bypass this)
+    if (!isAdmin) {
+      const { data: fullAccess } = await supabase
+        .from('purchases')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('type', 'full')
+        .eq('status', 'verified')
+        .limit(1);
 
-    if (!fullAccess || fullAccess.length === 0) {
-      const singleAccess = await executeSQL(
-        `SELECT id FROM public.purchases WHERE user_id = '${user.id}' AND movie_id = '${movieId}' AND type = 'single' AND status = 'verified' LIMIT 1`
-      );
+      if (!fullAccess || fullAccess.length === 0) {
+        const { data: singleAccess } = await supabase
+          .from('purchases')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('movie_id', movieId)
+          .eq('type', 'single')
+          .eq('status', 'verified')
+          .limit(1);
 
-      if (!singleAccess || singleAccess.length === 0) {
-        return NextResponse.json(
-          { error: 'Access denied. Purchase required.' },
-          { status: 403 }
-        );
+        if (!singleAccess || singleAccess.length === 0) {
+          return NextResponse.json(
+            { error: 'Access denied. Purchase required.' },
+            { status: 403 }
+          );
+        }
       }
     }
 
-    // 4. Generate secure embed URL
+    // 5. Generate secure embed URL
     const libraryId = process.env.BUNNY_STREAM_LIBRARY_ID;
     const tokenSecret = process.env.BUNNY_TOKEN_SECRET;
 
