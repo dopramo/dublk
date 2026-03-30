@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { executeSQL } from '@/lib/supabase/admin';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
@@ -22,50 +21,50 @@ function getSupabaseClient() {
   );
 }
 
-async function isAdmin(userId: string): Promise<boolean> {
-  try {
-    const result = await executeSQL(
-      `SELECT is_admin FROM public.profiles WHERE id = '${userId}' LIMIT 1`
-    );
-    return result?.[0]?.is_admin === true;
-  } catch {
-    return false;
-  }
+// Helper to check admin status
+async function isAdmin(supabase: any, userId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('profiles')
+    .select('is_admin')
+    .eq('id', userId)
+    .single();
+  return data?.is_admin === true;
 }
 
 // GET - List pending payments
 export async function GET(request: NextRequest) {
   const supabase = getSupabaseClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !(await isAdmin(user.id))) {
+  
+  if (!user || !(await isAdmin(supabase, user.id))) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   }
 
   const statusFilter = request.nextUrl.searchParams.get('status') || 'pending';
 
-  try {
-    const purchases = await executeSQL(`
-      SELECT 
-        p.*,
-        json_build_object('email', pr.email, 'full_name', pr.full_name) as profiles,
-        json_build_object('title', m.title) as movies
-      FROM public.purchases p
-      LEFT JOIN public.profiles pr ON p.user_id = pr.id
-      LEFT JOIN public.movies m ON p.movie_id = m.id
-      WHERE p.status = '${statusFilter}'
-      ORDER BY p.created_at DESC
-    `);
-    return NextResponse.json({ purchases: purchases || [] });
-  } catch (error: any) {
+  const { data: purchases, error } = await supabase
+    .from('purchases')
+    .select(`
+      *,
+      profiles:user_id (email, full_name),
+      movies:movie_id (title)
+    `)
+    .eq('status', statusFilter)
+    .order('created_at', { ascending: false });
+
+  if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  return NextResponse.json({ purchases: purchases || [] });
 }
 
 // PATCH - Verify or reject payment
 export async function PATCH(request: NextRequest) {
   const supabase = getSupabaseClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user || !(await isAdmin(user.id))) {
+  
+  if (!user || !(await isAdmin(supabase, user.id))) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   }
 
@@ -75,12 +74,16 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
   }
 
-  try {
-    const result = await executeSQL(
-      `UPDATE public.purchases SET status = '${status}' WHERE id = '${purchaseId}' RETURNING *`
-    );
-    return NextResponse.json({ purchase: result?.[0] || null });
-  } catch (error: any) {
+  const { data: purchase, error } = await supabase
+    .from('purchases')
+    .update({ status })
+    .eq('id', purchaseId)
+    .select()
+    .single();
+
+  if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  return NextResponse.json({ purchase });
 }
