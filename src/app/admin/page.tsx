@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ui/Toast';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import { timeAgo, formatCurrency } from '@/lib/utils';
 
@@ -32,17 +33,29 @@ interface Purchase {
   payment_proof_url: string | null;
   created_at: string;
   profiles?: { email: string; full_name: string };
-  movies?: { title: string };
+  movies?: { id: string; title: string };
 }
 
-type Tab = 'movies' | 'payments' | 'add';
+interface UserProfile {
+  id: string;
+  email: string;
+  full_name: string;
+  avatar_url: string;
+  is_admin: boolean;
+  created_at: string;
+  purchases: Purchase[];
+}
+
+type Tab = 'movies' | 'payments' | 'users' | 'add';
 
 export default function AdminPage() {
   const { user, isAdmin, isLoading } = useAuth();
+  const { showToast } = useToast();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('movies');
   const [movies, setMovies] = useState<Movie[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [editingMovie, setEditingMovie] = useState<string | null>(null);
@@ -53,6 +66,9 @@ export default function AdminPage() {
   }>({ bunny_video_id: '', runtime: '', description: '' });
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+  // Delete confirmation
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
   // Add movie form
   const [tmdbSearch, setTmdbSearch] = useState('');
   const [tmdbResults, setTmdbResults] = useState<any[]>([]);
@@ -60,13 +76,20 @@ export default function AdminPage() {
   const [bunnyVideoId, setBunnyVideoId] = useState('');
   const [publishing, setPublishing] = useState(false);
 
+  // Users tab
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [grantType, setGrantType] = useState<'full' | 'single'>('full');
+  const [grantMovieId, setGrantMovieId] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+
   useEffect(() => {
     if (!isLoading && (!user || !isAdmin)) {
       router.push('/');
     }
   }, [user, isAdmin, isLoading, router]);
 
-  // Fetch movies
+  // Fetch movies and payments
   useEffect(() => {
     async function fetchData() {
       if (!user || !isAdmin) return;
@@ -94,6 +117,26 @@ export default function AdminPage() {
 
     fetchData();
   }, [user, isAdmin]);
+
+  // Fetch users when users tab is opened
+  useEffect(() => {
+    async function fetchUsers() {
+      if (tab !== 'users' || users.length > 0) return;
+      setUsersLoading(true);
+      try {
+        const res = await fetch('/api/admin/users');
+        if (res.ok) {
+          const { users: usersData } = await res.json();
+          setUsers(usersData || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch users:', err);
+      } finally {
+        setUsersLoading(false);
+      }
+    }
+    fetchUsers();
+  }, [tab, users.length]);
 
   // Search TMDB
   const handleTmdbSearch = async () => {
@@ -155,12 +198,13 @@ export default function AdminPage() {
         setTmdbResults([]);
         setBunnyVideoId('');
         setTab('movies');
+        showToast('Movie added successfully!', 'success');
       } else {
         const { error } = await res.json();
-        alert(`Error: ${error}`);
+        showToast(`Error: ${error}`, 'error');
       }
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, 'error');
     } finally {
       setPublishing(false);
     }
@@ -194,6 +238,7 @@ export default function AdminPage() {
       description: movie.description || '',
     });
     setSaveMessage(null);
+    setDeleteConfirm(null);
   };
 
   // Save movie edits
@@ -238,6 +283,29 @@ export default function AdminPage() {
     }
   };
 
+  // Delete movie
+  const handleDeleteMovie = async (movieId: string) => {
+    setActionLoading(movieId);
+    try {
+      const res = await fetch('/api/admin/movies', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: movieId }),
+      });
+      if (res.ok) {
+        setMovies((prev) => prev.filter((m) => m.id !== movieId));
+        setEditingMovie(null);
+        setDeleteConfirm(null);
+        showToast('Movie deleted successfully', 'success');
+      } else {
+        const { error } = await res.json();
+        showToast(`Delete failed: ${error}`, 'error');
+      }
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   // Verify payment
   const verifyPayment = async (purchaseId: string, status: 'verified' | 'rejected') => {
     setActionLoading(purchaseId);
@@ -249,6 +317,86 @@ export default function AdminPage() {
       });
       if (res.ok) {
         setPurchases((prev) => prev.filter((p) => p.id !== purchaseId));
+        showToast(`Payment ${status}`, 'success');
+      }
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Toggle user admin
+  const toggleUserAdmin = async (userId: string, currentAdmin: boolean) => {
+    setActionLoading(userId);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, is_admin: !currentAdmin }),
+      });
+      if (res.ok) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === userId ? { ...u, is_admin: !currentAdmin } : u))
+        );
+        showToast(`Admin status updated`, 'success');
+      }
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Grant access to user
+  const handleGrantAccess = async (userId: string) => {
+    if (grantType === 'single' && !grantMovieId) {
+      showToast('Please select a movie', 'error');
+      return;
+    }
+    setActionLoading(`grant-${userId}`);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          type: grantType,
+          movieId: grantType === 'single' ? grantMovieId : undefined,
+        }),
+      });
+      if (res.ok) {
+        const { purchase } = await res.json();
+        setUsers((prev) =>
+          prev.map((u) =>
+            u.id === userId ? { ...u, purchases: [purchase, ...u.purchases] } : u
+          )
+        );
+        setGrantMovieId('');
+        showToast('Access granted successfully!', 'success');
+      } else {
+        const { error } = await res.json();
+        showToast(`Error: ${error}`, 'error');
+      }
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Revoke access
+  const handleRevokeAccess = async (userId: string, purchaseId: string) => {
+    setActionLoading(`revoke-${purchaseId}`);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ purchaseId }),
+      });
+      if (res.ok) {
+        setUsers((prev) =>
+          prev.map((u) =>
+            u.id === userId
+              ? { ...u, purchases: u.purchases.filter((p) => p.id !== purchaseId) }
+              : u
+          )
+        );
+        showToast('Access revoked', 'success');
       }
     } finally {
       setActionLoading(null);
@@ -263,17 +411,26 @@ export default function AdminPage() {
     );
   }
 
+  // Filtered users for search
+  const filteredUsers = userSearch
+    ? users.filter(
+        (u) =>
+          u.email?.toLowerCase().includes(userSearch.toLowerCase()) ||
+          u.full_name?.toLowerCase().includes(userSearch.toLowerCase())
+      )
+    : users;
+
   return (
     <div className="pt-24 pb-16 page-enter">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-2xl sm:text-3xl font-display font-bold text-white">Admin Panel</h1>
-          <p className="text-dark-400 text-sm mt-1">Manage movies, payments, and content</p>
+          <p className="text-dark-400 text-sm mt-1">Manage movies, payments, users, and content</p>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-8">
           <div className="p-4 rounded-xl bg-dark-800/50 border border-white/5">
             <p className="text-2xl font-bold text-white">{movies.length}</p>
             <p className="text-xs text-dark-400 mt-1">Total Movies</p>
@@ -290,11 +447,15 @@ export default function AdminPage() {
             <p className="text-2xl font-bold text-brand-400">{purchases.length}</p>
             <p className="text-xs text-dark-400 mt-1">Pending Payments</p>
           </div>
+          <div className="p-4 rounded-xl bg-dark-800/50 border border-white/5">
+            <p className="text-2xl font-bold text-purple-400">{users.length}</p>
+            <p className="text-xs text-dark-400 mt-1">Users</p>
+          </div>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 p-1 rounded-xl bg-dark-800/50 border border-white/5 mb-8 w-fit">
-          {(['movies', 'payments', 'add'] as Tab[]).map((t) => (
+        <div className="flex gap-1 p-1 rounded-xl bg-dark-800/50 border border-white/5 mb-8 w-fit flex-wrap">
+          {(['movies', 'payments', 'users', 'add'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -306,6 +467,7 @@ export default function AdminPage() {
             >
               {t === 'movies' && `🎬 Movies (${movies.length})`}
               {t === 'payments' && `💳 Payments (${purchases.length})`}
+              {t === 'users' && `👥 Users${users.length > 0 ? ` (${users.length})` : ''}`}
               {t === 'add' && '➕ Add Movie'}
             </button>
           ))}
@@ -433,26 +595,57 @@ export default function AdminPage() {
                         />
                       </div>
 
-                      {/* Save */}
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => saveEdit(movie)}
-                          disabled={actionLoading === movie.id}
-                          className="px-5 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-500 disabled:opacity-50 transition-all"
-                        >
-                          {actionLoading === movie.id ? 'Saving...' : '💾 Save Changes'}
-                        </button>
-                        <button
-                          onClick={() => setEditingMovie(null)}
-                          className="px-5 py-2 rounded-lg bg-white/5 text-dark-300 text-sm font-medium hover:bg-white/10 transition-all"
-                        >
-                          Cancel
-                        </button>
-                        {saveMessage && (
-                          <span className="text-sm text-green-400 font-medium animate-fade-in">
-                            ✓ {saveMessage}
-                          </span>
-                        )}
+                      {/* Actions */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => saveEdit(movie)}
+                            disabled={actionLoading === movie.id}
+                            className="px-5 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-500 disabled:opacity-50 transition-all"
+                          >
+                            {actionLoading === movie.id ? 'Saving...' : '💾 Save Changes'}
+                          </button>
+                          <button
+                            onClick={() => setEditingMovie(null)}
+                            className="px-5 py-2 rounded-lg bg-white/5 text-dark-300 text-sm font-medium hover:bg-white/10 transition-all"
+                          >
+                            Cancel
+                          </button>
+                          {saveMessage && (
+                            <span className="text-sm text-green-400 font-medium animate-fade-in">
+                              ✓ {saveMessage}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Delete Button */}
+                        <div className="flex items-center gap-2">
+                          {deleteConfirm === movie.id ? (
+                            <>
+                              <span className="text-xs text-red-400">Are you sure?</span>
+                              <button
+                                onClick={() => handleDeleteMovie(movie.id)}
+                                disabled={actionLoading === movie.id}
+                                className="px-3 py-1.5 text-xs rounded-lg bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 font-medium transition-all disabled:opacity-50"
+                              >
+                                {actionLoading === movie.id ? 'Deleting...' : 'Yes, Delete'}
+                              </button>
+                              <button
+                                onClick={() => setDeleteConfirm(null)}
+                                className="px-3 py-1.5 text-xs rounded-lg bg-white/5 text-dark-400 hover:text-white transition-all"
+                              >
+                                No
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setDeleteConfirm(movie.id)}
+                              className="px-3 py-1.5 text-xs rounded-lg text-red-400/60 border border-transparent hover:border-red-500/20 hover:bg-red-500/10 hover:text-red-400 font-medium transition-all"
+                            >
+                              🗑️ Delete
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -520,6 +713,220 @@ export default function AdminPage() {
                   </div>
                 </div>
               ))
+            )}
+          </div>
+        )}
+
+        {/* Users Tab */}
+        {tab === 'users' && (
+          <div className="space-y-4">
+            {/* Search */}
+            <div className="mb-4">
+              <input
+                type="text"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search users by email or name..."
+                className="w-full max-w-md px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-dark-500 focus:outline-none focus:ring-2 focus:ring-brand-500/50 text-sm"
+              />
+            </div>
+
+            {usersLoading ? (
+              <div className="py-12 flex justify-center">
+                <LoadingSpinner text="Loading users..." />
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="text-center py-12">
+                <p className="text-dark-400">{userSearch ? 'No users match your search' : 'No users found'}</p>
+              </div>
+            ) : (
+              filteredUsers.map((u) => {
+                const verifiedPurchases = u.purchases.filter((p) => p.status === 'verified');
+                const hasFullAccess = verifiedPurchases.some((p) => p.type === 'full');
+                const isExpanded = expandedUser === u.id;
+
+                return (
+                  <div
+                    key={u.id}
+                    className="rounded-xl bg-dark-800/50 border border-white/5 hover:border-white/10 transition-all overflow-hidden"
+                  >
+                    {/* User Row */}
+                    <button
+                      onClick={() => setExpandedUser(isExpanded ? null : u.id)}
+                      className="w-full flex items-center justify-between p-4 text-left"
+                    >
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-sm font-bold">
+                          {(u.full_name?.[0] || u.email?.[0] || 'U').toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-white truncate">
+                            {u.full_name || 'No Name'}
+                          </p>
+                          <p className="text-xs text-dark-500 truncate">{u.email}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {u.is_admin && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">
+                            Admin
+                          </span>
+                        )}
+                        {hasFullAccess ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/20 font-medium">
+                            Full Access
+                          </span>
+                        ) : verifiedPurchases.length > 0 ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-medium">
+                            {verifiedPurchases.length} movie{verifiedPurchases.length > 1 ? 's' : ''}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-dark-700 text-dark-400 border border-white/5 font-medium">
+                            Free
+                          </span>
+                        )}
+                        <svg
+                          className={`w-4 h-4 text-dark-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </div>
+                    </button>
+
+                    {/* Expanded Panel */}
+                    {isExpanded && (
+                      <div className="border-t border-white/5 p-4 bg-dark-900/50 space-y-4">
+                        {/* User Info */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div>
+                            <p className="text-[10px] text-dark-500 uppercase tracking-wider mb-1">User ID</p>
+                            <p className="text-xs text-dark-300 font-mono truncate">{u.id}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-dark-500 uppercase tracking-wider mb-1">Member Since</p>
+                            <p className="text-xs text-dark-300">{timeAgo(u.created_at)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-dark-500 uppercase tracking-wider mb-1">Total Purchases</p>
+                            <p className="text-xs text-dark-300">{u.purchases.length}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-dark-500 uppercase tracking-wider mb-1">Admin</p>
+                            <button
+                              onClick={() => toggleUserAdmin(u.id, u.is_admin)}
+                              disabled={actionLoading === u.id}
+                              className={`text-xs px-2 py-0.5 rounded-md transition-all ${
+                                u.is_admin
+                                  ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
+                                  : 'bg-dark-700 text-dark-400 hover:bg-dark-600'
+                              }`}
+                            >
+                              {actionLoading === u.id ? '...' : u.is_admin ? '✓ Yes' : '✗ No'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Current Access */}
+                        <div>
+                          <p className="text-xs font-medium text-dark-300 mb-2">🎫 Access & Purchases</p>
+                          {u.purchases.length === 0 ? (
+                            <p className="text-xs text-dark-500">No purchases</p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {u.purchases.map((p) => (
+                                <div
+                                  key={p.id}
+                                  className="flex items-center justify-between p-2.5 rounded-lg bg-dark-800/70 border border-white/5"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-sm">{p.type === 'full' ? '👑' : '🎬'}</span>
+                                    <div className="min-w-0">
+                                      <p className="text-xs text-white truncate">
+                                        {p.type === 'full' ? 'Full Access' : p.movies?.title || 'Single Movie'}
+                                      </p>
+                                      <p className="text-[10px] text-dark-500">
+                                        {p.payment_method === 'admin_grant' ? 'Admin granted' : `${p.payment_method}`} •{' '}
+                                        {timeAgo(p.created_at)}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                    <span
+                                      className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+                                        p.status === 'verified'
+                                          ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                                          : p.status === 'pending'
+                                          ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                                          : 'bg-red-500/10 text-red-400 border-red-500/20'
+                                      }`}
+                                    >
+                                      {p.status}
+                                    </span>
+                                    {p.status === 'verified' && (
+                                      <button
+                                        onClick={() => handleRevokeAccess(u.id, p.id)}
+                                        disabled={actionLoading === `revoke-${p.id}`}
+                                        className="text-[10px] px-1.5 py-0.5 rounded text-red-400/60 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                                      >
+                                        {actionLoading === `revoke-${p.id}` ? '...' : 'Revoke'}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Grant Access */}
+                        <div className="p-3 rounded-xl bg-brand-500/5 border border-brand-500/10">
+                          <p className="text-xs font-medium text-brand-300 mb-2.5">➕ Grant Access</p>
+                          <div className="flex items-end gap-2 flex-wrap">
+                            <div>
+                              <label className="block text-[10px] text-dark-400 mb-1">Type</label>
+                              <select
+                                value={grantType}
+                                onChange={(e) => setGrantType(e.target.value as 'full' | 'single')}
+                                className="px-3 py-2 rounded-lg bg-dark-800 border border-white/10 text-white text-xs focus:outline-none focus:ring-2 focus:ring-brand-500/50"
+                              >
+                                <option value="full">Full Access</option>
+                                <option value="single">Single Movie</option>
+                              </select>
+                            </div>
+                            {grantType === 'single' && (
+                              <div className="flex-1 min-w-[200px]">
+                                <label className="block text-[10px] text-dark-400 mb-1">Movie</label>
+                                <select
+                                  value={grantMovieId}
+                                  onChange={(e) => setGrantMovieId(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg bg-dark-800 border border-white/10 text-white text-xs focus:outline-none focus:ring-2 focus:ring-brand-500/50"
+                                >
+                                  <option value="">Select a movie...</option>
+                                  {movies.map((m) => (
+                                    <option key={m.id} value={m.id}>
+                                      {m.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            <button
+                              onClick={() => handleGrantAccess(u.id)}
+                              disabled={actionLoading === `grant-${u.id}`}
+                              className="px-4 py-2 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-500 disabled:opacity-50 transition-all"
+                            >
+                              {actionLoading === `grant-${u.id}` ? 'Granting...' : 'Grant'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         )}

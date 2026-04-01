@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ToastProvider } from '@/components/ui/Toast';
 import Navbar from '@/components/ui/Navbar';
 import Footer from '@/components/ui/Footer';
 import AuthModal from '@/components/auth/AuthModal';
+import AuthCodeRedirect from '@/components/ui/AuthCodeRedirect';
 
 export const metadata: Metadata = {
   title: {
@@ -13,6 +15,15 @@ export const metadata: Metadata = {
   },
   description: 'Watch your favorite Hollywood movies dubbed in Sinhala. Sri Lanka\'s premier Sinhala dubbed movie streaming platform.',
   keywords: ['sinhala dubbed movies', 'sinhala movies', 'dubbed movies sri lanka', 'watch movies sinhala', 'DubLK'],
+  icons: {
+    icon: [
+      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/favicon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+  },
   openGraph: {
     type: 'website',
     locale: 'en_US',
@@ -41,6 +52,9 @@ export default function RootLayout({
       <body className="min-h-screen flex flex-col">
         <ToastProvider>
           <AuthProvider>
+            <Suspense fallback={null}>
+              <AuthCodeRedirect />
+            </Suspense>
             <Navbar />
             <AuthModal />
             <main className="flex-1">

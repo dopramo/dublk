@@ -32,6 +32,7 @@ export default function DashboardPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
 
   const supabase = createClient();
 
@@ -93,6 +94,7 @@ export default function DashboardPage() {
   const handleChangePassword = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError('');
+    setPasswordSuccess(false);
 
     if (newPassword.length < 6) {
       setPasswordError('Password must be at least 6 characters.');
@@ -114,6 +116,7 @@ export default function DashboardPage() {
 
       setNewPassword('');
       setConfirmPassword('');
+      setPasswordSuccess(true);
       showToast('Password updated successfully!', 'success');
     } catch (err: any) {
       setPasswordError(err.message || 'Failed to update password');
@@ -388,6 +391,15 @@ export default function DashboardPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
                       <p className="text-red-400 text-sm">{passwordError}</p>
+                    </div>
+                  )}
+
+                  {passwordSuccess && (
+                    <div className="flex items-start gap-2.5 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                      <svg className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <p className="text-green-400 text-sm">Password updated successfully!</p>
                     </div>
                   )}
 
